@@ -1,0 +1,4 @@
+numpy~=1.24.3
+tqdm~=4.65.0
+docplex~=2.25.236
+pandas~=1.5.3
