@@ -127,7 +127,7 @@ def task_assignment(job: env.Job, solution, cur_time):
                 # Without IJCoE, the target time unit for the next allocation must self-increment
                 target_time_units[site.index] += tg.real_running_time
 
-
+#计算作业完成时间
 def get_jct(job: env.Job, solution, cur_time, reordered=False):
     """
     Calculate the completion time of the given job.
@@ -156,7 +156,7 @@ def get_jct(job: env.Job, solution, cur_time, reordered=False):
                 completion_time = tmp if tmp > completion_time else completion_time
         job.completion_time = completion_time
 
-
+# 清理已完成任务
 def remove_complete_tasks(job: env.Job, cur_time):
     """
     Remove the complete tasks from `info` and update
@@ -191,7 +191,7 @@ def remove_complete_tasks(job: env.Job, cur_time):
         #     for tg_with_time in info.outstanding[site][job].keys():
         #         assert tg_with_time[1] > cur_time
 
-
+# 状态维护
 def cleanup(jobs, cur_time, processed, pbar):
     """
     Do the cleanup at the end of current time.

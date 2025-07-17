@@ -12,61 +12,63 @@ import pandas as pd
 # ----------------------------------------------------------------------------
 
 # HINT: `num_tasks` should be large to minimize the affect of intra-job co-execution
-MIN_TASK_NUM_IN_TG = 1
-MAX_TASK_NUM_IN_TG = 200
+MIN_TASK_NUM_IN_TG = 50 #每个任务组最少任务数
+MAX_TASK_NUM_IN_TG = 50 #每个任务组最多任务数
 
-MIN_TG_NUM = 1
-MAX_TG_NUM = 5
+MIN_TG_NUM = 3 #最少任务组数量
+MAX_TG_NUM = 3 #最多任务组数量
 
-JOB_NUM = 250
-SITE_NUM = 100
+JOB_NUM = 250 #job总数
+SITE_NUM = 100 #服务器数量
 
-MAX_ARRIVAL_TU = 260  # HINT: This should >= JOB_NUM
+MAX_ARRIVAL_TU = 250  # HINT: This should >= JOB_NUM #最大job到达时间
 
 # HINT: System utilization is used to tune the inter-job arrivals
-UTILIZATION_FACTOR = 0.75
+UTILIZATION_FACTOR = 0.75 #系统利用率
 
 # The parameter for Zipf distribution
-ALPHA = 2
+ALPHA = 0 #奇普夫参数
 
 # Setting SCALE_INTER_ARRIVALS \to 0 to make a fierce contention
-SCALE_INTER_ARRIVALS = 0.005
+SCALE_INTER_ARRIVALS = 0.005 #作业到达间隔缩放因子，控制作业到达的密集程度，值越小竞争越激烈
 
-MIN_AS_NUM_FOR_TG = 8
+MIN_AS_NUM_FOR_TG = 6 #每个任务组的最小站点总数
 # HINT: A larger `MAX_AS_NUM_FOR_TG` leads to a better performance of SJF algorithms
-MAX_AS_NUM_FOR_TG = 12  # HINT: This should <= SITE_NUM
+MAX_AS_NUM_FOR_TG = 6  # HINT: This should <= SITE_NUM #每个任务组的最大站点总数
 
 # Parameters for generating the computing capacities
-MIN_MU = 3
+MIN_MU = 5 #站点最小计算能力
 # HINT: `MAX_MU` should be small to minimize the affect of intra-job co-execution.
 #  However, a smaller it will lead to a larger computation overhead of order scheduling
-MAX_MU = 5
+MAX_MU = 5 #站点最大计算能力
 
 # In heterogenous mode, the tasks of any job can have different running times
 HOMOGENEOUS_MODE = "HOMOGENEOUS_MODE"
 HETEROGENOUS_MODE = "HETEROGENOUS_MODE"
 MODE = HETEROGENOUS_MODE
+#模式问题，这里设置为异构
 
 # Parameters for long-tail distribution in the heterogenous mode
 RUNNING_TIME_MU = 1
 RUNNING_TIME_SIGMA = 0.5
-
+# 任务运行时间服从长尾分布，RUNNING_TIME_MU/SIGMA定义运行时间的正态分布参数
 # ----------------------------------------------------------------------------
 # Where are the generated info. stored.
 # ----------------------------------------------------------------------------
 jobs = []
 sites = []
 NUM_TASKS = 0
-
+# 这里设置初值：作业 站点 任务总量
 
 class Job(object):
     def __init__(self, index, task_groups, arrival_time):
-        self.index = index
-        self.task_groups = task_groups
-        self.arrival_time = arrival_time
+        self.index = index #作业唯一标识
+        self.task_groups = task_groups #包含的任务组列表
+        self.arrival_time = arrival_time #作业到达时间
         self.available_sites = None  # The set S_g for this job J_g
-
+        #作业可用站点集合
         self.completion_time = None
+        #作业完成时间
 
     def set_available_sites(self):
         """
@@ -74,15 +76,18 @@ class Job(object):
         """
         self.available_sites = reduce(lambda x, y: x | y,
                                       [tg.available_sites for tg in self.task_groups])
+        #计算作业可用站点集合
 
     def reset(self):
         self.completion_time = None
+    #重置作业完成时间，用于新一轮调度调试
 
     def _collect_task_group_info(self):
         info = ""
         for tg in self.task_groups:
             info += "\t" + str(tg) + "\n"
         return info
+    #收集作业中所有任务组的详细信息，字符串表达
 
     def __str__(self):
         return "job index: {0}\nnum. of task groups: {1}, arrival time: {2}, S_g: {3}\n" \
@@ -91,22 +96,23 @@ class Job(object):
                                               self.arrival_time,
                                               {site.index for site in self.available_sites},
                                               self._collect_task_group_info())
-
-
+    #定义作业对象的字符串表示形式
+#任务组
 class TaskGroup(object):
     def __init__(self, index, job, num_tasks, available_sites):
-        self.index = index
-        self.job = job
-        self.num_tasks = num_tasks
-        self.num_unfinished_tasks = num_tasks
+        self.index = index  #任务组唯一标识
+        self.job = job  #任务组所属作业
+        self.num_tasks = num_tasks #包含的任务数量
+        self.num_unfinished_tasks = num_tasks #未完成任务数量
 
         self.available_sites = available_sites  # The set S_g^k for this task group T_g^k
+        #可用站点集合
 
         # Real execution time of each task in this task group.
         # In Alibaba trace, we use the instance duration as the task's running time.
         # All instances of the same task group has the same execution time
         self.real_running_time = None
-
+        #实际运行时间
     def reset(self):
         self.num_unfinished_tasks = self.num_tasks
 
@@ -121,14 +127,16 @@ class Site(object):
     def __init__(self, index, capacities):
         self.index = index
         self.capacities = capacities  # A list of \mu_m^g for each job on this site S_m
+        #针对不同作业的计算能力列表
 
         # The estimated backlog size of this site.
         # Here we use the word "estimated" because it is the number of allocated time units,
         # not the actual time duration for running tasks
         self.estimated_bklg_size = 0
-
+        #基于分配时间单位的积压估计，用于调度决策
         # The actual time duration for running tasks
         self.true_bklg_size = 0
+        #实际运行时间的积压，用于性能评估
 
     def __str__(self):
         return "index: {0}, capacities: {1}".format(
@@ -146,17 +154,22 @@ def create_env():
     # Generate each job's non-repeat arrival time
     arrivals = np.arange(MAX_ARRIVAL_TU)
     np.random.shuffle(arrivals)
+    #生成作业到达时间并且随机打乱
 
     # Generate the number of task groups for each job
     num_task_groups = np.random.randint(MIN_TG_NUM, MAX_TG_NUM + 1, size=JOB_NUM)
+    #生成每个作业的任务组数量
 
     # Generate sites
     # If a site is not available to some job, the corresponding \mu should be zero. We just skip it here.
     # In real scenarios, you should set \mu based on the resource request and equipment.
     capacities = np.random.randint(MIN_MU, MAX_MU + 1, size=(SITE_NUM, JOB_NUM))
+    #随机生成SITE_NUM×JOB_NUM的能力矩阵(μ_m^g)
     for site_idx in range(SITE_NUM):
         site = Site(site_idx, capacities=capacities[site_idx])
         sites.append(site)
+    #为每个站点创建Site对象并加入全局sites列表
+    
 
     for job_idx in range(JOB_NUM):
         job = Job(job_idx, task_groups=None, arrival_time=arrivals[job_idx])
@@ -165,6 +178,7 @@ def create_env():
         num_tasks = np.random.randint(MIN_TASK_NUM_IN_TG, MAX_TASK_NUM_IN_TG + 1, size=num_task_groups[job_idx])
         # Generate AS set for this task group
         num_available_sites = np.random.randint(MIN_AS_NUM_FOR_TG, MAX_AS_NUM_FOR_TG + 1, size=num_task_groups[job_idx])
+        #生成作业：任务组数量和可用站点数
 
         tgs = []
         for tg_idx in range(num_task_groups[job_idx]):
@@ -174,7 +188,8 @@ def create_env():
             available_sites = {site for site in sites if site.index in as_set}
 
             tg = TaskGroup(tg_idx, job, num_tasks=num_tasks[tg_idx], available_sites=available_sites)
-
+        # 为每个作业生成任务组
+        # 设置任务运行时间(异构/同构模式)
             global MODE
             if MODE == HETEROGENOUS_MODE:
                 # Generate each task's real running time with a long-tail distribution
@@ -194,6 +209,7 @@ def create_env():
         jobs.append(job)
 
     global NUM_TASKS
+    #统计任务总数
     for job in jobs:
         NUM_TASKS += sum(tg.num_tasks for tg in job.task_groups)
 
@@ -274,7 +290,77 @@ def from_trace():
     # Generate sites
     # If a site is not available to some job, the corresponding \mu should be zero. We just skip it here.
     # In real scenarios, you should set \mu based on the resource request and equipment.
+
+    #原始：均匀分布
     capacities = np.random.randint(MIN_MU, MAX_MU + 1, size=(SITE_NUM, JOB_NUM))
+    print("均匀分布")
+
+    #幂律分布
+    # Generate sites capacities with Power Law distribution
+    # capacities = np.zeros((SITE_NUM, JOB_NUM), dtype=int)
+    # alpha = 1.5  # 幂律指数，值越大分布越陡峭
+    # print("alpha=1.5")
+    # for site_idx in range(SITE_NUM):
+    #     for job_idx in range(JOB_NUM):
+    #         # 生成幂律分布的随机值
+    #         power_value = (np.random.pareto(alpha) + 1) * MIN_MU
+    #         # 限制在MIN-MAX范围内
+    #         capacities[site_idx][job_idx] = int(np.clip(power_value, MIN_MU, MAX_MU))
+
+    #对数正态分布
+    # # Generate sites capacities with Log-Normal distribution
+    # print("对数正态")
+    # mu, sigma = 0.8, 0.6  # 分布参数，需根据实际调整
+    # log_normal_values = np.random.lognormal(mu, sigma, size=(SITE_NUM, JOB_NUM))
+    # # 缩放并转换为整数
+    # capacities = (log_normal_values - np.min(log_normal_values))
+    # capacities = capacities / np.max(capacities) * (MAX_MU - MIN_MU) + MIN_MU
+    # capacities = capacities.astype(int)
+
+    #加权分布
+    # Define server tiers and weights
+    # print("加权分布")
+    # TIER_WEIGHTS = {
+    #     "high_perf": 9,    # 高性能服务器 (占10%)
+    #     "standard": 5,      # 标准服务器 (占40%)
+    #     "low_power": 2      # 低功耗服务器 (占50%)
+    # }
+    # capacities = np.zeros((SITE_NUM, JOB_NUM), dtype=int)
+    # tier_types = np.random.choice(
+    #     list(TIER_WEIGHTS.keys()), 
+    #     size=SITE_NUM,
+    #     p=[0.1, 0.4, 0.5]  # 各等级占比
+    # )
+
+    # for site_idx, tier in enumerate(tier_types):
+    #     base_capacity = np.random.randint(MIN_MU, int(MAX_MU * 0.8))
+    #     weight_factor = TIER_WEIGHTS[tier] / 5.0  # 标准化权重因子
+    
+    #     # 修正：使用内置int()替代astype()
+    #     tier_value = int(base_capacity * weight_factor)  # 🟢 关键修正点
+    
+    #     capacities[site_idx] = np.clip(
+    #         tier_value,  # 使用转换后的整数值
+    #         MIN_MU, 
+    #         MAX_MU
+    #     )
+
+    #混合分布
+    # Hybrid distribution (Power Law + Log-Normal)
+    # capacities = np.zeros((SITE_NUM, JOB_NUM), dtype=int)
+    # alpha = 1.2  # 幂律指数
+    # mu, sigma = 0.7, 0.4  # 对数正态参数
+    # for site_idx in range(SITE_NUM):
+    #     # 基础值采用幂律分布
+    #     base_value = (np.random.pareto(alpha) + 1) * MIN_MU
+    
+    #     for job_idx in range(JOB_NUM):
+    #         # 叠加对数正态波动
+    #         fluctuation = np.random.lognormal(mu, sigma)
+    #         value = base_value * fluctuation
+        
+    #         capacities[site_idx][job_idx] = int(np.clip(value, MIN_MU, MAX_MU))
+
     for site_idx in range(SITE_NUM):
         site = Site(site_idx, capacities=capacities[site_idx])
         sites.append(site)
@@ -282,11 +368,35 @@ def from_trace():
     # Generate available sites with Zipf distribution
     shuffled_sites = np.arange(SITE_NUM)
     np.random.shuffle(shuffled_sites)
+
+    #奇普夫分布
     probs = np.power([1 / (i + 1) for i in shuffled_sites], ALPHA)
     if ALPHA == 0:
         probs = probs / SITE_NUM
     else:
         probs = probs / sum(probs)
+
+    #对数正态分布
+    # mu, sigma = 0, 0.5  # 参数需根据数据调整
+    # log_probs = np.random.lognormal(mu, sigma, size=len(shuffled_sites))
+    # probs = log_probs / sum(log_probs)
+    # print("对数正态分布：mu, sigma = 0, 0.5")
+
+    #指数分布
+    # scale = 1.0  # 控制衰减速率
+    # exp_probs = np.random.exponential(scale, size=len(shuffled_sites))
+    # probs = exp_probs / sum(exp_probs)
+    # print("指数分布")
+
+    #均匀分布
+    # probs = np.ones(len(shuffled_sites)) / len(shuffled_sites)
+    # print("均匀分布")
+
+    #混合分布：幂律+奇普夫
+    # zipf_probs = np.power([1/(i+1) for i in shuffled_sites], ALPHA)
+    # uniform_probs = np.ones(len(shuffled_sites))
+    # probs = 0.7 * (zipf_probs/sum(zipf_probs)) + 0.3 * (uniform_probs/len(shuffled_sites))  # 权重可调
+    # print("混合分布")
 
     for job_idx in range(JOB_NUM):
         job = Job(job_idx, task_groups=None, arrival_time=arrivals[job_idx])

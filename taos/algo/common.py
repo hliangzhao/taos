@@ -180,6 +180,152 @@ def obta(job: env.Job, solution):
     assert solved
     return estimated
 
+def obta_1(job: env.Job, solution):
+    """
+    Solve the NLIP directly:
+
+                   min_{ f_{km}, c } c
+    s.t. \sum_{k \in K_g^m} f_{km} \leq max \{ c - b_m, 0 \},    \forall m \in S_g
+        |T_g^k| \leq \sum_{m \in S_g^k} \mu_m f_{km},            \forall k \in [K_g]
+                      0 \leq f_{km},                             \forall m \in S_g, k \in [K_g^m]
+                      c \geq 0
+    """
+    estimated = -1
+
+    solved = False
+    c_min = C_min(job)
+    c_max = C_max(job)
+    # Get the coefficient matrix
+    A = create_coeff_matrix(job)
+    # Create ILP model
+    mdl = Model(name="OBTA_1")
+    # mdl.print_information()
+
+    # Create decision variables (S_g x K_g + 1 vars)
+    flows = {(site.index, tg.index): mdl.integer_var(lb=0, name="flow-m{0}-k{1}".format(site.index, tg.index))
+             for tg in job.task_groups for site in job.available_sites}
+    c = mdl.integer_var(lb=c_min,ub=c_max, name="C")
+
+    # Create constraints (S_g + K_g cons)
+    for site in job.available_sites:
+        mdl.add_constraint(
+            ct=mdl.sum(A[site.index, tg.index] * flows[site.index, tg.index]
+                       # NOTE: Here is the difference!
+                       for tg in job.task_groups) <= mdl.max(c - site.estimated_bklg_size, 0),
+            ctname="cons-site{0}".format(site.index)
+        )
+    for tg in job.task_groups:
+        mdl.add_constraint(
+            ct=mdl.sum(site.capacities[job.index] * flows[site.index, tg.index]
+                       for site in tg.available_sites) >= tg.num_tasks,
+            ctname="cons-tg{0}".format(tg.index)
+        )
+
+    # Minimization
+    mdl.minimize(c)
+    # mdl.print_information()
+
+    if mdl.solve():
+        # print("* Solved!")
+        solved = True
+        # mdl.print_solution()
+
+        # Save the solution.
+        mdl_result2solution(job, flows, solution)
+        estimated = c.solution_value
+    else:
+        print("* No solution!\n")
+
+    assert solved
+    return estimated
+
+def subranges_2(job: env.Job):
+    """
+    修改：不再依赖C_min/C_max，直接基于所有站点的bklg值生成分段区间
+    原理：通过站点积压时间自然划分时间轴[1,3](@ref)
+    """
+    bklgs = sorted([site.estimated_bklg_size for site in job.available_sites])
+
+    # 生成覆盖全时间轴的分段区间
+    M = max(1000, 2 * max(site.estimated_bklg_size for site in job.available_sites))
+    ranges = [[0,bklgs[0]]]  # 起始区间 [0, 最小bklg]
+    for i in range(len(bklgs) - 1):
+        ranges.append([bklgs[i], bklgs[i+1]])
+    ranges.append([bklgs[-1], M])  # 结束区间 [最大bklg, 大数M]
+    return ranges
+
+def obta_2(job: env.Job, solution):
+    """
+    修改：移除C_min/C_max调用，直接使用subranges生成的分段区间
+    """
+    A = create_coeff_matrix(job)
+    ranges = subranges_2(job)  # 获取基于bklg的分段区间
+    solved = False
+    estimated = -1
+
+    for r in ranges:
+        # ----------------------------------------------------------------------------
+        # Solve the ILP for each subrange:
+        #
+        #               min_{ f_{km}, c } c
+        # s.t. \sum_{k \in K_g^m} f_{km} - c \leq -b_m,         \forall m \in Set of used sites
+        #      \sum_{k \in K_g^m} f_{km} \leq 0,                \forall m \in Set of unused sites
+        #      |T_g^k| \leq \sum_{m \in S_g^k} \mu_m f_{km},    \forall k \in [K_g]
+        #                  0 \leq f_{km},                       \forall m \in S_g, k \in [K_g^m]
+        #              r[0] \leq c \leq r[1]
+        # ----------------------------------------------------------------------------
+
+        # Create integer linear programming (ILP) model
+        mdl = Model(name="ILP-subrange_2-{0}-{1}".format(r[0], r[1]))
+
+        # Create decision variables (S_g x K_g + 1 vars)
+        flows = {(site.index, tg.index): mdl.integer_var(lb=0, name="flow-m{0}-k{1}".format(site.index, tg.index))
+                 for tg in job.task_groups for site in job.available_sites}
+        c = mdl.integer_var(lb=r[0], ub=r[1], name="C")
+
+        # Create constraints (S_g + K_g cons)
+        # for site in job.available_sites:
+        #     # No backlog can be in (r[0], r[1])
+        #     assert (site.estimated_bklg_size <= r[0] or site.estimated_bklg_size >= r[1])
+
+        # For used sites
+        _ = {site.index: mdl.add_constraint(
+            ct=mdl.sum(A[site.index, tg.index] * flows[site.index, tg.index]
+                       for tg in job.task_groups) - c <= -site.estimated_bklg_size,
+            ctname="cons-cpt-used-site{0}".format(site.index)
+        ) for site in job.available_sites if site.estimated_bklg_size <= r[0]}
+
+        # For unused sites
+        _ = {site.index: mdl.add_constraint(
+            ct=mdl.sum(A[site.index, tg.index] * flows[site.index, tg.index] for tg in job.task_groups) <= 0,
+            ctname="cons-cpt-used-site{0}".format(site.index)
+        ) for site in job.available_sites if site.estimated_bklg_size >= r[1]}
+
+        # For task groups
+        _ = {tg.index: mdl.add_constraint(
+            ct=mdl.sum(site.capacities[job.index] * flows[site.index, tg.index]
+                       for site in tg.available_sites) >= tg.num_tasks,
+            ctname="cons-proc-tsk-tg{0}".format(tg.index)
+        ) for tg in job.task_groups}
+
+        # Minimization
+        mdl.minimize(c)
+        # mdl.print_information()
+
+        if mdl.solve():
+            # print("* Solved!")
+            solved = True
+            # mdl.print_solution()
+
+            # Save the solution
+            mdl_result2solution(job, flows, solution)
+            estimated = c.solution_value
+            break
+        # else:
+        # print("* No solution! Test next subrange...\n")
+
+    assert solved
+    return estimated
 
 def nlip(job: env.Job, solution):
     """
@@ -194,10 +340,8 @@ def nlip(job: env.Job, solution):
     estimated = -1
 
     solved = False
-
     # Get the coefficient matrix
     A = create_coeff_matrix(job)
-
     # Create ILP model
     mdl = Model(name="NLIP")
     # mdl.print_information()
@@ -240,6 +384,90 @@ def nlip(job: env.Job, solution):
     assert solved
     return estimated
 
+def lip(job: env.Job, solution):
+    """
+    Solve the NLIP using linearized constraints:
+
+                   min_{ f_{km}, c } c
+    s.t. \sum_{k \in K_g^m} f_{km} \leq z_m,                    \forall m \in S_g
+          z_m \geq c - b_m,                                     \forall m \in S_g
+          z_m \geq 0,                                           \forall m \in S_g
+          z_m \leq c - b_m + K \cdot y_{m1},                    \forall m \in S_g
+          z_m \leq K \cdot y_{m2},                              \forall m \in S_g
+          y_{m1} + y_{m2} \leq 1,                              \forall m \in S_g
+          |T_g^k| \leq \sum_{m \in S_g^k} \mu_m f_{km},         \forall k \in [K_g]
+          0 \leq f_{km},                                        \forall m \in S_g, k \in [K_g^m]
+          c \geq 0
+    """
+    estimated = -1
+    solved = False
+
+    # Get the coefficient matrix
+    A = create_coeff_matrix(job)
+    
+    # Create ILP model
+    mdl = Model(name="LIP")
+    
+    # 1. 创建决策变量
+    # 流量变量
+    flows = {(site.index, tg.index): mdl.integer_var(lb=0, name=f"flow-m{site.index}-k{tg.index}")
+             for tg in job.task_groups for site in job.available_sites}
+    c = mdl.integer_var(lb=0, name="C")
+    
+    # 2. 引入辅助变量（每个站点m）
+    K = 10**6  # 足够大的整数（Big-M）
+    z = {site.index: mdl.continuous_var(lb=0, name=f"z_{site.index}") 
+         for site in job.available_sites}
+    y1 = {site.index: mdl.binary_var(name=f"y1_{site.index}") 
+          for site in job.available_sites}
+    y2 = {site.index: mdl.binary_var(name=f"y2_{site.index}") 
+          for site in job.available_sites}
+
+    # 3. 添加约束
+    for site in job.available_sites:
+        m = site.index
+        b_m = site.estimated_bklg_size
+        
+        # 3.1 线性化max函数的约束
+        mdl.add_constraint(z[m] >= c - b_m, 
+                          ctname=f"z_ge_c_minus_b_{m}")
+        mdl.add_constraint(z[m] >= 0, 
+                          ctname=f"z_ge_0_{m}")
+        mdl.add_constraint(z[m] <= c - b_m + K * y1[m], 
+                          ctname=f"z_le_c_minus_b_plus_Ky1_{m}")
+        mdl.add_constraint(z[m] <= K * y2[m], 
+                          ctname=f"z_le_Ky2_{m}")
+        mdl.add_constraint(y1[m] + y2[m] <= 1, 
+                          ctname=f"y_sum_{m}")
+        
+        # 3.2 原流量约束（使用z_m替代max函数）
+        mdl.add_constraint(
+            mdl.sum(A[m, tg.index] * flows[m, tg.index] 
+                    for tg in job.task_groups) <= z[m],
+            ctname=f"cons-site_{m}"
+        )
+    
+    # 4. 任务组约束（保持不变）
+    for tg in job.task_groups:
+        mdl.add_constraint(
+            mdl.sum(site.capacities[job.index] * flows[site.index, tg.index]
+                    for site in tg.available_sites) >= tg.num_tasks,
+            ctname=f"cons-tg_{tg.index}"
+        )
+
+    # 5. 目标函数（保持不变）
+    mdl.minimize(c)
+
+    # 6. 求解模型
+    if mdl.solve():
+        solved = True
+        mdl_result2solution(job, flows, solution)
+        estimated = c.solution_value
+    else:
+        print("* No solution!\n")
+
+    assert solved
+    return estimated
 
 def mdl_result2solution(job: env.Job, flows, solution):
     """
